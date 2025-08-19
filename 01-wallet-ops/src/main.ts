@@ -2,18 +2,23 @@
  * Sui Wallet Operations Tutorial
  * 
  * This tutorial demonstrates how to:
- * 1. Discover available Sui wallets
- * 2. Connect to wallets
- * 3. Disconnect from wallets
- * 4. Access wallet accounts
- * 5. Handle wallet connection states
- * 6. Listen to wallet events for state changes
+ * 1. Discover available Sui wallets automatically on page load
+ * 2. Connect to wallets with user interaction
+ * 3. Disconnect from wallets and clear stored data
+ * 4. Access and display wallet accounts
+ * 5. Handle wallet connection states dynamically
+ * 6. Listen to wallet events for automatic state changes
+ * 7. Persist wallet connections using localStorage
+ * 8. Auto-reconnect to previously connected wallets
  * 
  * Key Concepts:
  * - Wallet Standard: Uses @mysten/wallet-standard for consistent wallet interactions
  * - Connection State: Determined by presence of accounts in wallet.accounts array
  * - Event System: Wallets emit 'change' events for accounts, features, and chains
  * - Account Structure: Each account has address (Sui address) and publicKey properties
+ * - Persistence: Connection state saved to localStorage for seamless user experience
+ * - Auto-Connection: Silent reconnection using connect({ silent: true })
+ * - Account Selection: User can choose accounts with persistence of selection
  */
 
 // Import the getWallets function from Mysten's wallet standard library
@@ -21,17 +26,153 @@
 import { getWallets } from '@mysten/wallet-standard';
 
 /**
+ * Interface for storing wallet connection state in localStorage
+ */
+interface StoredWalletConnection {
+  walletName: string;
+  accountAddress: string;
+  accountIndex: number;
+}
+
+/**
+ * LocalStorage key for storing wallet connection state
+ */
+const WALLET_CONNECTION_KEY = 'sui_wallet_connection';
+
+/**
+ * Save the current wallet connection to localStorage
+ * 
+ * This function persists the user's wallet choice and selected account so that
+ * on subsequent visits, the app can automatically reconnect to the same wallet
+ * and select the same account without user intervention.
+ * 
+ * @param walletName - Name of the connected wallet (e.g., "Sui Wallet")
+ * @param accountAddress - Full Sui address of the selected account
+ * @param accountIndex - Zero-based index of the selected account in wallet.accounts array
+ */
+function saveWalletConnection(walletName: string, accountAddress: string, accountIndex: number): void {
+  const connectionData: StoredWalletConnection = {
+    walletName,
+    accountAddress,
+    accountIndex
+  };
+  
+  try {
+    localStorage.setItem(WALLET_CONNECTION_KEY, JSON.stringify(connectionData));
+    console.log(`Saved wallet connection: ${walletName} - Account ${accountIndex + 1}`);
+  } catch (error) {
+    console.error('Failed to save wallet connection:', error);
+  }
+}
+
+/**
+ * Load wallet connection from localStorage
+ * 
+ * Retrieves previously saved wallet connection data to enable automatic
+ * reconnection. Returns null if no previous connection was saved or if
+ * the stored data is invalid.
+ * 
+ * @returns Stored wallet connection data or null if none exists or invalid
+ */
+function loadWalletConnection(): StoredWalletConnection | null {
+  try {
+    const stored = localStorage.getItem(WALLET_CONNECTION_KEY);
+    if (stored) {
+      const connectionData: StoredWalletConnection = JSON.parse(stored);
+      console.log(`Loaded wallet connection: ${connectionData.walletName} - Account ${connectionData.accountIndex + 1}`);
+      return connectionData;
+    }
+  } catch (error) {
+    console.error('Failed to load wallet connection:', error);
+  }
+  return null;
+}
+
+/**
+ * Clear stored wallet connection from localStorage
+ * 
+ * Removes all saved wallet connection data. Called when:
+ * - User explicitly disconnects from a wallet
+ * - Auto-connection fails (wallet not found, account mismatch)
+ * - Stored data becomes invalid or corrupted
+ */
+function clearWalletConnection(): void {
+  try {
+    localStorage.removeItem(WALLET_CONNECTION_KEY);
+    console.log('Cleared stored wallet connection');
+  } catch (error) {
+    console.error('Failed to clear wallet connection:', error);
+  }
+}
+
+/**
+ * Attempt to auto-connect to a previously connected wallet
+ * 
+ * This function provides seamless user experience by automatically reconnecting
+ * to the wallet and account the user was using in their previous session.
+ * Uses silent connection to avoid prompting the user.
+ * 
+ * Process:
+ * 1. Load stored connection data from localStorage
+ * 2. Find the matching wallet by name in available wallets
+ * 3. Attempt silent connection using connect({ silent: true })
+ * 4. Verify the stored account still exists and matches
+ * 5. Clean up invalid data if connection fails
+ * 
+ * @param availableWallets - Array of currently available wallet objects
+ * @returns Promise<boolean> - True if auto-connection was successful, false otherwise
+ */
+async function autoConnectWallet(availableWallets: readonly any[]): Promise<boolean> {
+  const storedConnection = loadWalletConnection();
+  if (!storedConnection) return false;
+
+  // Find the wallet by name
+  const wallet = availableWallets.find(w => w.name === storedConnection.walletName);
+  if (!wallet) {
+    console.log(`Previously connected wallet "${storedConnection.walletName}" not found`);
+    clearWalletConnection();
+    return false;
+  }
+
+  try {
+    // Attempt silent connection
+    const connectFeature = wallet.features['standard:connect'] as any;
+    await connectFeature.connect({ silent: true });
+    
+    // Verify the account still exists and matches
+    if (wallet.accounts && 
+        wallet.accounts.length > storedConnection.accountIndex && 
+        wallet.accounts[storedConnection.accountIndex].address === storedConnection.accountAddress) {
+      
+      console.log(`Auto-connected to ${wallet.name} with account ${storedConnection.accountIndex + 1}`);
+      return true;
+    } else {
+      console.log('Stored account no longer matches, clearing connection');
+      clearWalletConnection();
+      return false;
+    }
+  } catch (error) {
+    console.log(`Failed to auto-connect to ${wallet.name}:`, error);
+    clearWalletConnection();
+    return false;
+  }
+}
+
+/**
  * Main function to display all available Sui wallets and their connection states
  * 
- * This function:
- * - Discovers all installed Sui wallet extensions
+ * This function runs automatically on page load and:
+ * - Discovers all installed Sui wallet extensions with debugging
+ * - Attempts silent auto-connection to previously connected wallet
  * - Registers event listeners for wallet state changes
- * - Shows their connection status (connected/disconnected)
- * - Displays appropriate buttons (connect/disconnect)
- * - Shows accounts for connected wallets
+ * - Shows connection status with visual indicators (● Connected / ○ Disconnected)
+ * - Displays appropriate action buttons (Connect/Disconnect) based on state
+ * - Shows account information for connected wallets
  * - Automatically refreshes UI when wallet events occur
+ * - Persists user wallet and account selections in localStorage
+ * - Handles account selection changes with real-time saving
  */
-function displaySuiWallets(): void {
+async function displaySuiWallets(): Promise<void> {
   // Get the output container element where we'll display wallet information
   const output = document.getElementById('output');
   if (!output) return;
@@ -40,6 +181,19 @@ function displaySuiWallets(): void {
   // getWallets() returns a registry of all available wallet standards
   // .get() returns an array of wallet objects that support the Sui standard
   const availableWallets = getWallets().get();
+  
+  // Debug: Log discovered wallets
+  console.log(`Discovered ${availableWallets.length} wallets:`, availableWallets.map(w => ({
+    name: w.name,
+    version: w.version,
+    accounts: w.accounts?.length || 0
+  })));
+
+  // STEP 1.1: Attempt auto-connection to previously connected wallet
+  // This happens only on the first call to displaySuiWallets
+  if (!output.innerHTML || output.innerHTML === 'Loading wallets...') {
+    await autoConnectWallet(availableWallets);
+  }
 
   // STEP 1.5: Register event listeners for wallet changes
   // This helps detect when wallets change their connection state
@@ -85,8 +239,7 @@ function displaySuiWallets(): void {
       // wallet.accounts will be an empty array or undefined when disconnected
       // and will contain WalletAccount objects when connected
 
-      const walletAccounts = wallet.accounts || [];
-      const isConnected = walletAccounts.length > 0;
+      const isConnected = wallet.accounts.length > 0;
       
       // STEP 4: Build HTML for each wallet
       walletList += `
@@ -128,7 +281,7 @@ function displaySuiWallets(): void {
     // STEP 7: Add event listeners and handle wallet interactions
     availableWallets.forEach((wallet, index) => {
       // Re-check connection status as it may have changed due to events
-      const isConnected = wallet.accounts && wallet.accounts.length > 0;
+      const isConnected = wallet.accounts.length > 0;
       
       // Get button elements (only one will exist based on connection state)
       const connectBtn = document.getElementById(`connect-${index}`);
@@ -157,6 +310,14 @@ function displaySuiWallets(): void {
           await connectFeature.connect();
           console.log(`Connected to ${wallet.name}`);
           
+          // Save the wallet connection with the first account (default)
+          if (wallet.accounts && wallet.accounts.length > 0) {
+            const defaultAccount = wallet.accounts[0];
+            if (defaultAccount) {
+              saveWalletConnection(wallet.name, defaultAccount.address, 0);
+            }
+          }
+          
           // STEP 10: Refresh the entire UI to reflect new connection state
           // This updates buttons from "Connect" to "Disconnect" and shows accounts
           displaySuiWallets();
@@ -177,6 +338,9 @@ function displaySuiWallets(): void {
           // The wallet may also emit a 'change' event which will trigger UI refresh
           await disconnectFeature.disconnect();
           console.log(`Disconnected from ${wallet.name}`);
+          
+          // Clear the stored wallet connection
+          clearWalletConnection();
           
           // STEP 12: Refresh the entire UI to reflect disconnection
           // This updates buttons from "Disconnect" to "Connect" and hides accounts
@@ -232,30 +396,52 @@ function displayAccounts(wallet: any, accountListDiv: HTMLElement | null, accoun
     // Show account number and truncated address for easy identification
     option.textContent = `Account ${index + 1} (${account.address.slice(0, 8)}...)`;
     
-    // STEP 15: Set the first account as default (as per Sui wallet standards)
-    // Most wallets present the primary/default account first
-    if (index === 0) option.selected = true;
+    // STEP 15: Set the selected account based on stored connection or default to first
+    const storedConnection = loadWalletConnection();
+    if (storedConnection && 
+        wallet.name === storedConnection.walletName && 
+        index === storedConnection.accountIndex) {
+      option.selected = true;
+    } else if (index === 0 && !storedConnection) {
+      // Default to first account only if no stored connection
+      option.selected = true;
+    }
     
     accountSelect.appendChild(option);
   });
 
   // Update the display with all account information
   accountListDiv.innerHTML = accountsHtml;
+  
+  // STEP 16: Add event listener for account selection changes
+  accountSelect.addEventListener('change', () => {
+    const selectedIndex = parseInt(accountSelect.value);
+    const selectedAccount = wallet.accounts[selectedIndex];
+    if (selectedAccount) {
+      // Save the new account selection to localStorage
+      saveWalletConnection(wallet.name, selectedAccount.address, selectedIndex);
+      console.log(`Selected account ${selectedIndex + 1} for ${wallet.name}`);
+    }
+  });
 }
 
-// STEP 16: Application initialization
-// Wait for the DOM to be fully loaded before setting up the wallet interface
+// STEP 17: Application initialization and automatic wallet discovery
+// The app initializes immediately when the page loads
 const app = document.getElementById('app');
 if (app) {
   // Set up the basic HTML structure for the wallet demo
+  // No buttons needed - everything happens automatically
   app.innerHTML = `
     <h1>Wallet Ops Demo</h1>
-    <p>This tutorial demonstrates how to connect to Sui wallets and access accounts.</p>
-    <button id="walletsBtn">Show Sui Wallets</button>
-    <div id="output"></div>
+    <p>This tutorial demonstrates automatic wallet discovery, connection persistence, and account management.</p>
+    <p><em>Wallets load automatically. Previously connected wallets will auto-reconnect silently.</em></p>
+    <div id="output">Loading wallets...</div>
   `;
 
-  // STEP 17: Add event listener to trigger wallet discovery and display
-  const btn = document.getElementById('walletsBtn');
-  btn?.addEventListener('click', displaySuiWallets);
+  // STEP 18: Automatically discover and display wallets with delay
+  // The delay ensures wallet extensions have time to register with the wallet standard
+  // This replaces manual button clicking with seamless automatic loading
+  setTimeout(() => {
+    displaySuiWallets();
+  }, 500);
 }
