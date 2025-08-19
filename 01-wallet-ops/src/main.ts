@@ -434,7 +434,6 @@ if (app) {
   app.innerHTML = `
     <h1>Wallet Ops Demo</h1>
     <p>This tutorial demonstrates automatic wallet discovery, connection persistence, and account management.</p>
-    <p><em>Wallets load automatically. Previously connected wallets will auto-reconnect silently.</em></p>
     <div id="output">Loading wallets...</div>
   `;
 
